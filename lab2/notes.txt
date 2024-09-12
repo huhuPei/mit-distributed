@@ -1,0 +1,70 @@
+Raft：基于log复制的共识算法
+
+lab2A 领导者选举（leader election）
+
+规则：多数投票原则+随机选举时间
+
+1、如何定义选举超时？
+论文超时时间为150ms~300ms，根据实际情况随机一个超时时间；
+简单的方法就是定义一个时间变量，记录最近一次收到appendRPC的时间，然后定期检查当前时间与记录的时间的间隔是否大于超时时间。
+
+1、重置选举时间的时机
+a. 开始选举（ok）
+b. 从当前leader处收到appendRPC（也就是过期的leader消息不能重置）(ok)
+c. 成功投票给另外一个peer（这里要注意候选人的限制）(ok)
+
+2、出现多个候选人选举，无法选出 leader 后会再次超时发起选举，follower 如何知道可以再次投票？
+根据 requestRPC中的term与follwer currentTerm进行比较，如果term > currentTermterm，
+说明已经开始新任期的选举，可以重置voteFor，并再次投票。
+
+3、如何选择合格的候选人，保持日志最新？
+up-to-date原则
+
+容易遇到的问题：
+死锁（持有锁 进行RPC）
+方案：
+选举时间过长（选举投票是，对端不可达时会阻塞，影响选举时长）
+方案：
+线程没有正常退出（使用cond等待，一直没有被唤醒导致没有退出）
+方案：
+
+lab2B 日志复制（log replicate）
+
+领导者不允许将 commitIndex 更新到上一个术语（或者，就此而言，未来术语）中的某个位置。
+因此，正如规则所说，您特别需要检查。
+这是因为 Raft 领导者无法确定某个条目是否确实已提交（并且将来不会更改），如果它不是来自他们当前的任期。本文中的图 8 对此进行了说明。
+
+日志状态：uncommitted committed applied
+
+Make sure that you check for commitIndex > lastApplied either periodically, or after commitIndex is updated
+
+1、heartbeat如何处理？
+它是追加条目为空的appendRPC，处理方式与普通appendRPC一致，不需要特殊对待
+
+2、日志追加时，如何确定复制起点？
+通过一致性检查。
+
+3、如何判断一条log已经提交了呢？
+需要遵循两个原则：
+a. 需要复制到大多数peers；（通过matchIndex计算）
+b. log所属term必须等于currentTerm，先前的term需要在currentTerm提交完第一个log之后，才算提交，也就是log[N].term == currentTerm
+
+5、非空appendEntries同样是通过heartbeats进行调用的
+
+6、commitIndex如何推进？
+leader：通过更新的matchIndex，判断每条log时候已经复制到大多数peer
+follower：通过leader传递的commitIndex参数进行更新
+
+7、需不需要维护自身的matchIndex？
+需要的。同时需要在成为leader后，在初始化时，必须将自身的matcIndex设为len(log)-1，表示已知的log长度；
+如果不这样做，当只剩下一半servers时，可能会出现一直无法提交指令的情况。
+例如以下场景：
+
+8、日志快速追赶
+一些细节处理
+
+lab2C 持久化
+只要的持久状态数据更改时进行持久化就可以。
+
+lab2D 日志压缩
+snapshot的创建
