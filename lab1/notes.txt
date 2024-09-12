@@ -1,0 +1,40 @@
+MapReduce
+
+master worker
+map reduce
+rpc（http代理rpc）
+
+设计：
+1、master datastruct：
+state：记录每个map和reduce任务的状态，值为 idle, in-progress,or completed；
+id：记录任务对应worker的id
+location and size：map完成后，必须保存中间文件的大小和位置
+
+2、临时文件机制
+mapreduce 任务使用临时文件写入数据，再rename持久化到磁盘中
+ 
+3、worker容错机制
+当worker出错无法通信时，需要重新执行worker上的任务，
+map task：重置所有 completed 和 in-progerss任务为 idel，并重执行
+recude task：completed任务不要重执行；重置in-progerss任务位idel，并重执行
+
+如何判断worker出错？当master下发任务后，超过10s还未收到返回消息时，则判断为出错，重新执行任务。
+所有这里的worker出错不区分延迟和崩溃
+
+4、master收到任务完成消息时
+a. 重复收到task完成消息时，直接忽略消息
+b. 当延迟的 worker 发送完成消息时，直接忽略消息
+
+5、在最后一个map task完成后才能开始分配 reduce task，如何衔接这两个阶段
+记录还未完成的map任务的数目n，当worker完成任务并发送提交消息时，才进行减一操作；
+当最后map任务还未完成时，请求消息返回""任务，worker进行sleep一段时间再进行请求；
+直到n等于0，才过渡到reduce阶段；
+
+6、mapreduce 任务全部完成时，master和worker分别如何退出
+让 Done() 返回true，master线程先退出；
+master退出后，call() 将返回false，worker线程退出。
+
+7、sort 出现错误
+sort 文件会出现不区分大小写，这是因为受到local字符集的影响，需要设置环境变量 LOC_ALL=C
+
+应用场景：大规模机器学习问题，分布式训练
