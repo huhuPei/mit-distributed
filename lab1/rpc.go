@@ -15,11 +15,11 @@ import "strconv"
 //
 
 type ExampleArgs struct {
-	X int
+  X int
 }
 
 type ExampleReply struct {
-	Y int
+  Y int
 }
 
 // Add your RPC definitions here.
@@ -30,7 +30,7 @@ type ExampleReply struct {
 // Can't use the current directory since
 // Athena AFS doesn't support UNIX-domain sockets.
 func coordinatorSock() string {
-	s := "/var/tmp/824-mr-"
-	s += strconv.Itoa(os.Getuid())
-	return s
+  s := "/var/tmp/824-mr-"
+  s += strconv.Itoa(os.Getuid())
+  return s
 }
