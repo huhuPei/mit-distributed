@@ -24,6 +24,24 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type AssignTaskArgs struct {
+  WorkerId string
+}
+
+type AssignTaskReply struct {
+  Mode 	ModeType
+  Task 	*TaskInfo
+  Timeout int
+}
+
+type CommitTaskArgs struct {
+  Mode	 ModeType
+  TaskId   int
+  WorkerId string
+  Files    []FileInfo
+}
+
+type CommitTaskReply struct { }
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
