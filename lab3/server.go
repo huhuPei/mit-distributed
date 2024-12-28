@@ -1,56 +1,56 @@
 package kvraft
 
 import (
-  "6.824/labgob"
-  "6.824/labrpc"
-  "6.824/raft"
-  "log"
-  "sync"
-  "sync/atomic"
-  //"bytes"
-  "fmt"
-  "time"
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
+	"log"
+	"sync"
+	"sync/atomic"
+	"bytes"
+	"fmt"
+	"time"
 )
 
 const Debug = false
 
 type logTopic string
 const (
-  dGet 		 logTopic = "GET"
-  dPut		 logTopic = "PUT"
-  dApply   logTopic = "APY"
-  dError   logTopic = "ERRO"
-  dInfo    logTopic = "INFO"
-  dPersist logTopic = "PERS"
-  dSnap    logTopic = "SNAP"
-  dTerm    logTopic = "TERM"
-  dTest    logTopic = "TEST"
-  dWarn    logTopic = "WARN"
+	dGet 		 logTopic = "GET"
+	dPut		 logTopic = "PUT"
+	dApply   logTopic = "APY"
+	dError   logTopic = "ERRO"
+	dInfo    logTopic = "INFO"
+	dPersist logTopic = "PERS"
+	dSnap    logTopic = "SNAP"
+	dTerm    logTopic = "TERM"
+	dTest    logTopic = "TEST"
+	dWarn    logTopic = "WARN"
 )
 
 func DPrintf(topic logTopic, format string, a ...interface{}) (n int, err error) {
-  if Debug {
-    prefix := fmt.Sprintf("%v ", string(topic))
-    format = prefix + format
-    if topic == dError {
-      log.Fatalf(format, a...)
-    } else {
-      log.Printf(format, a...)
-    }
-  }
-  return
+	if Debug {
+		prefix := fmt.Sprintf("%v ", string(topic))
+		format = prefix + format
+		if topic == dError {
+			log.Fatalf(format, a...)
+		} else {
+			log.Printf(format, a...)
+		}
+	}
+	return
 }
 
 
 type Op struct {
-  // Your definitions here.
-  // Field names must start with capital letters,
-  // otherwise RPC will break.
-  Name  string // "Put" / "Append" / "Get"
-  Key   string
-  Value string
-  SequenceNumber int
-  ClientId int64
+	// Your definitions here.
+	// Field names must start with capital letters,
+	// otherwise RPC will break.
+	Name  string // "Put" / "Append" / "Get"
+	Key   string
+	Value string
+	SequenceNumber int
+	ClientId int64
 }
 
 //todo::
@@ -62,126 +62,127 @@ type Op struct {
 type void struct {}
 
 type KVServer struct {
-  mu      sync.Mutex
-  me      int
-  rf      *raft.Raft
-  applyCh chan raft.ApplyMsg
-  dead    int32 // set by Kill()
+	mu      sync.Mutex
+	me      int
+	rf      *raft.Raft
+	applyCh chan raft.ApplyMsg
+	dead    int32 // set by Kill()
 
-  maxraftstate int // snapshot if log grows this big
+	maxraftstate int // snapshot if log grows this big
 
-  // Your definitions here.
-  data				 map[string]string
-  maxSeqNumberOfClients map[int64]int
-  syncIndexChs		 map[int]chan Op
+	// Your definitions here.
+	data				 map[string]string
+	maxSeqNumberOfClients map[int64]int
+	syncIndexChs map[int]chan Op
+	persister		 *raft.Persister
 }
 
 func (kv *KVServer) getIndexCh(index int) chan Op {	
-  kv.mu.Lock()
-  defer kv.mu.Unlock()
-  if _, exist := kv.syncIndexChs[index]; !exist {
-    kv.syncIndexChs[index] = make(chan Op, 1)
-  }
-  return kv.syncIndexChs[index]
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if _, exist := kv.syncIndexChs[index]; !exist {
+		kv.syncIndexChs[index] = make(chan Op, 1)
+	}
+	return kv.syncIndexChs[index]
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-  // Your code here.
-   op := Op{Name: "Get", Key: args.Key, SequenceNumber: args.SequenceNumber, 
-    ClientId: args.ClientId}
-  // wbuf := new(bytes.Buffer)
+	// Your code here.
+ 	op := Op{Name: "Get", Key: args.Key, SequenceNumber: args.SequenceNumber, 
+		ClientId: args.ClientId}
+	// wbuf := new(bytes.Buffer)
   // enc := labgob.NewEncoder(wbuf)
-  // if enc.Encode(op) != nil {
-  // 	DFatalf("Op encode fail, unable to start cmd:%v", op)
-  // }
-  // cmd := wbuf.Bytes()
-  index, term, isLeader := kv.rf.Start(op)
-  DPrintf(dGet, "Se%d T%d Start Op{Get %s} Index:%d from SN:%d Cli-%d", 
-    kv.me, term, op.Key, index, op.SequenceNumber, op.ClientId)
+	// if enc.Encode(op) != nil {
+	// 	DFatalf("Op encode fail, unable to start cmd:%v", op)
+	// }
+	// cmd := wbuf.Bytes()
+	index, term, isLeader := kv.rf.Start(op)
+	DPrintf(dGet, "Se%d T%d Start Op{Get %s} Index:%d from SN:%d Cli-%d", 
+		kv.me, term, op.Key, index, op.SequenceNumber, op.ClientId)
 
-  if !isLeader || index <= 0 {
-    reply.Err = ErrWrongLeader
-    return 
-  }
+	if !isLeader || index <= 0 {
+		reply.Err = ErrWrongLeader
+		return 
+	}
 
-  ch := kv.getIndexCh(index)
+	ch := kv.getIndexCh(index)
 
-  //wait agreement on the index command
-  select {
-  case applyOp := <- ch:
-    if applyOp == op {
-      // success commit command
-      DPrintf(dGet, "Se%d T%d executed Op{Get %s} Index:%d from SN:%d Cli-%d", 
-        kv.me, term, op.Key, index, op.SequenceNumber, op.ClientId)
-      kv.mu.Lock()
-      if value, exist := kv.data[op.Key]; exist {
-        *reply = GetReply{Err: OK, Value:value}
-      } else {
-        reply.Err = ErrNoKey
-      }
-      kv.mu.Unlock()
-    } else {
-      reply.Err = ErrWrongLeader
-      DPrintf(dTerm, "Se%d Lose leadership T%d not execute Op{Get %s} Index:%d from SN:%d Cli-%d", 
-        kv.me, term, op.Key, index, op.SequenceNumber, op.ClientId)
-    }
-  case <-time.After(2 * electionTimeout):
-    DPrintf(dGet, "Se%d times out waiting for Index: Op apply, SN:%d", kv.me, args.SequenceNumber, index)	
-  }
+	//wait agreement on the index command
+	select {
+	case applyOp := <- ch:
+		if applyOp == op {
+			// success commit command
+			DPrintf(dGet, "Se%d T%d executed Op{Get %s} Index:%d from SN:%d Cli-%d", 
+				kv.me, term, op.Key, index, op.SequenceNumber, op.ClientId)
+			kv.mu.Lock()
+			if value, exist := kv.data[op.Key]; exist {
+				*reply = GetReply{Err: OK, Value:value}
+			} else {
+				reply.Err = ErrNoKey
+			}
+			kv.mu.Unlock()
+		} else {
+			reply.Err = ErrWrongLeader
+			DPrintf(dTerm, "Se%d Lose leadership T%d not execute Op{Get %s} Index:%d from SN:%d Cli-%d", 
+				kv.me, term, op.Key, index, op.SequenceNumber, op.ClientId)
+		}
+	case <-time.After(2 * electionTimeout):
+		DPrintf(dGet, "Se%d times out waiting for Index: Op apply, SN:%d", kv.me, args.SequenceNumber, index)	
+	}
 
-  kv.mu.Lock()
-  delete(kv.syncIndexChs, index)
-  kv.mu.Unlock()
+	kv.mu.Lock()
+	delete(kv.syncIndexChs, index)
+	kv.mu.Unlock()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-  // Your code here.
-  kv.mu.Lock()
-  if kv.maxSeqNumberOfClients[args.ClientId] >= args.SequenceNumber { 
-    reply.Err = OK
-    kv.mu.Unlock()		
-    return 
-  } 
-  kv.mu.Unlock()
-  op := Op{Name: args.Op, Key: args.Key, Value: args.Value, 
-    SequenceNumber: args.SequenceNumber, ClientId: args.ClientId}
-  //wbuf := new(bytes.Buffer)
+	// Your code here.
+	kv.mu.Lock()
+	if kv.maxSeqNumberOfClients[args.ClientId] >= args.SequenceNumber { 
+		reply.Err = OK
+		kv.mu.Unlock()		
+		return 
+	} 
+	kv.mu.Unlock()
+	op := Op{Name: args.Op, Key: args.Key, Value: args.Value, 
+		SequenceNumber: args.SequenceNumber, ClientId: args.ClientId}
+	//wbuf := new(bytes.Buffer)
   //enc := labgob.NewEncoder(wbuf)
-  //if enc.Encode(op) != nil {
-  //	DFatalf("Op encode fail, unable to start cmd:%v", op)
-  //}
-  //cmd := wbuf.Bytes()
-  index, term, isLeader := kv.rf.Start(op)
-  DPrintf(dPut, "Se%d T%d Start Op{%s %s %s} Index:%d from SN:%d Cli-%d", 
-  kv.me, term, op.Name, op.Key, op.Value, index, op.SequenceNumber, op.ClientId)
+	//if enc.Encode(op) != nil {
+	//	DFatalf("Op encode fail, unable to start cmd:%v", op)
+	//}
+	//cmd := wbuf.Bytes()
+	index, term, isLeader := kv.rf.Start(op)
+	DPrintf(dPut, "Se%d T%d Start Op{%s %s %s} Index:%d from SN:%d Cli-%d", 
+	kv.me, term, op.Name, op.Key, op.Value, index, op.SequenceNumber, op.ClientId)
 
-  if !isLeader || index <= 0 {
-    reply.Err = ErrWrongLeader
-    return
-  }
+	if !isLeader || index <= 0 {
+		reply.Err = ErrWrongLeader
+		return
+	}
 
-  ch := kv.getIndexCh(index)
+	ch := kv.getIndexCh(index)
 
-  //wait agreement on the index command
-  select {
-  case applyOp := <- ch:
-    if applyOp == op {
-      DPrintf(dPut, "Se%d T%d executed Op{%s %s %s} Index:%d from SN:%d Cli-%d", 
-      kv.me, term, op.Name, op.Key, op.Value, index, op.SequenceNumber, op.ClientId)
-      reply.Err = OK	
-      // success commit command
-    } else {
-      reply.Err = ErrWrongLeader
-      DPrintf(dTerm, "Se%d Lose leadership T%d, not execute Op{%s %s %s} Index:%d from SN:%d Cli-%d", 
-        kv.me, term, op.Name, op.Key, op.Value, index, op.SequenceNumber, op.ClientId)
-    }
-  case <-time.After(2 * electionTimeout):
-    DPrintf(dGet, "Se%d times out waiting for Index: Op apply, SN:%d", kv.me, args.SequenceNumber, index)	
-  }
-    
-  kv.mu.Lock()
-  delete(kv.syncIndexChs, index)
-  kv.mu.Unlock()
+	//wait agreement on the index command
+	select {
+	case applyOp := <- ch:
+		if applyOp == op {
+			DPrintf(dPut, "Se%d T%d executed Op{%s %s %s} Index:%d from SN:%d Cli-%d", 
+			kv.me, term, op.Name, op.Key, op.Value, index, op.SequenceNumber, op.ClientId)
+			reply.Err = OK	
+			// success commit command
+		} else {
+			reply.Err = ErrWrongLeader
+			DPrintf(dTerm, "Se%d Lose leadership T%d, not execute Op{%s %s %s} Index:%d from SN:%d Cli-%d", 
+				kv.me, term, op.Name, op.Key, op.Value, index, op.SequenceNumber, op.ClientId)
+		}
+	case <-time.After(2 * electionTimeout):
+		DPrintf(dGet, "Se%d times out waiting for Index: Op apply, SN:%d", kv.me, args.SequenceNumber, index)	
+	}
+		
+	kv.mu.Lock()
+	delete(kv.syncIndexChs, index)
+	kv.mu.Unlock()
 }
 
 //
@@ -195,48 +196,84 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // to suppress debug output from a Kill()ed instance.
 //
 func (kv *KVServer) Kill() {
-  atomic.StoreInt32(&kv.dead, 1)
-  kv.rf.Kill()
-  // Your code here, if desired.
+	atomic.StoreInt32(&kv.dead, 1)
+	kv.rf.Kill()
+	// Your code here, if desired.
 }
 
 func (kv *KVServer) killed() bool {
-  z := atomic.LoadInt32(&kv.dead)
-  return z == 1
+	z := atomic.LoadInt32(&kv.dead)
+	return z == 1
 }
 
 func (kv *KVServer) applier() {
-  for kv.killed() == false {
-    var msg raft.ApplyMsg
-    msg = <- kv.applyCh
-    if msg.CommandValid {
-      kv.mu.Lock()
-      op, ok := msg.Command.(Op)
-      if ok && op.Name != "Get" {
-        if kv.maxSeqNumberOfClients[op.ClientId] < op.SequenceNumber {
-          kv.executeWriteOpEL(&op)
-          // DPrintf(dApply, "Se%d Index:%d Command:%v applied.", kv.me, msg.CommandIndex, op)
-          kv.maxSeqNumberOfClients[op.ClientId] = op.SequenceNumber
-        }
-      }
-      
-      if _, isLeader := kv.rf.GetState(); isLeader {
-        if ch, exist := kv.syncIndexChs[msg.CommandIndex]; exist {
-          ch <- op
-        }		
-      }
-      kv.mu.Unlock()
-    }
-  }
+	for kv.killed() == false {
+		var msg raft.ApplyMsg
+		msg = <- kv.applyCh
+		kv.mu.Lock()
+		if msg.CommandValid {
+			op, ok := msg.Command.(Op)
+			if ok && op.Name != "Get" {
+				if kv.maxSeqNumberOfClients[op.ClientId] < op.SequenceNumber {
+					kv.executeWriteOpEL(&op)
+					// DPrintf(dApply, "Se%d Index:%d Command:%v applied.", kv.me, msg.CommandIndex, op)
+					kv.maxSeqNumberOfClients[op.ClientId] = op.SequenceNumber
+				}
+			}
+			
+			if _, isLeader := kv.rf.GetState(); isLeader {
+				if ch, exist := kv.syncIndexChs[msg.CommandIndex]; exist {
+					ch <- op
+				}		
+			}
+
+			if kv.maxraftstate > 0 && kv.persister.RaftStateSize() > kv.maxraftstate {
+				kv.StartSnapshotEL(msg.CommandIndex)
+			}
+		} else if msg.SnapshotValid {
+			kv.applySnapshot(msg.Snapshot)
+		}
+		kv.mu.Unlock()
+	}
 }
 
 func (kv *KVServer) executeWriteOpEL(op *Op) {
-  value, exist := kv.data[op.Key]
-  if !exist || op.Name == "Put" {
-    kv.data[op.Key] = op.Value
-  } else if op.Name == "Append" {
-    kv.data[op.Key] = value + op.Value
-  }
+	value, exist := kv.data[op.Key]
+	if !exist || op.Name == "Put" {
+		kv.data[op.Key] = op.Value
+	} else if op.Name == "Append" { 
+		kv.data[op.Key] = value + op.Value
+	}
+}
+
+func (kv *KVServer) StartSnapshotEL(index int) {
+	wbuf := new(bytes.Buffer)
+	enc := labgob.NewEncoder(wbuf)
+	if enc.Encode(kv.maxSeqNumberOfClients) != nil || 
+			enc.Encode(kv.data) != nil {
+		DPrintf(dError, "Se%d Encode State Failed.", kv.me)	
+	}
+	DPrintf(dSnap, "Se%d Start Snapshot, snapshotIndex:%d", kv.me, index)
+	snapshot := wbuf.Bytes()
+	kv.rf.Snapshot(index, snapshot)
+}
+
+func (kv *KVServer) restoreState() {
+	snapshot := kv.persister.ReadSnapshot()
+	kv.applySnapshot(snapshot)
+	DPrintf(dSnap, "Se%d Restore State.", kv.me)	
+}
+
+func (kv *KVServer) applySnapshot(snapshot []byte) {
+	if len(snapshot) > 0 {
+		rbuf := bytes.NewBuffer(snapshot)
+		dec := labgob.NewDecoder(rbuf)
+		if dec.Decode(&kv.maxSeqNumberOfClients) != nil || 
+			 dec.Decode(&kv.data) != nil {
+			DPrintf(dError, "Se%d Decode Snapshot Failed.", kv.me)	
+		}
+		DPrintf(dSnap, "Se%d Apply Snapshot.", kv.me)	
+	}
 }
 
 //
@@ -254,24 +291,27 @@ func (kv *KVServer) executeWriteOpEL(op *Op) {
 // for any long-running work.
 //
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
-  // call labgob.Register on structures you want
-  // Go's RPC library to marshall/unmarshall.
-  labgob.Register(Op{})
+	// call labgob.Register on structures you want
+	// Go's RPC library to marshall/unmarshall.
+	labgob.Register(Op{})
 
-  kv := new(KVServer)
-  kv.me = me
-  kv.maxraftstate = maxraftstate
+	kv := new(KVServer)
+	kv.me = me
+	kv.maxraftstate = maxraftstate
 
-  // You may need initialization code here.
+	// You may need initialization code here.
 
-  kv.applyCh = make(chan raft.ApplyMsg)
-  kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-  // You may need initialization code here.
-  kv.data = make(map[string]string)
-  kv.maxSeqNumberOfClients = make(map[int64]int)
-  kv.syncIndexChs = make(map[int]chan Op)
-  go kv.applier()
+	// You may need initialization code here.
+	kv.data = make(map[string]string)
+	kv.maxSeqNumberOfClients = make(map[int64]int)
+	kv.syncIndexChs = make(map[int]chan Op)
+	kv.persister = persister
+	kv.restoreState()
+	
+	go kv.applier()
 
-  return kv
+	return kv
 }
