@@ -43,7 +43,8 @@ func getWorkerID() string {
     return ""
   }
   lvs := strings.Split(tmpfile.Name(), "/")
-    return lvs[len(lvs)-1]
+	tmpfile.Close()
+  return lvs[len(lvs)-1]
 }
 
 func procMapTask(task *TaskInfo, mapf func(string, string) []KeyValue) []string {
