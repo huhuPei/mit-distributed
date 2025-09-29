@@ -12,7 +12,7 @@ Lab3: KV Raft
 Lab4: Sharded KV  
 
 #### 论文解读：
-Raft、Zookeeper、Frangipani、Memcache-FB、 ...    
+Raft、Zookeeper、Chain Replication、Memcache-FB、 ...    
 
 
 [课程链接](http://nil.csail.mit.edu/6.824/2022/schedule.html)
