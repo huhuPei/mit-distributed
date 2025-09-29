@@ -1,0 +1,43 @@
+MapReduce 实现记录
+
+1、master datastruct：
+state：记录每个 map 和 reduce 任务的状态，值为 idle、in-progress、completed。
+id：记录任务对应 worker id。
+location and size：map 任务完成后，必须保存中间文件的大小和位置（由于此实验是本地实现，所以这部分未使用）。
+
+2、临时文件机制
+mapreduce 任务先使用临时文件写入数据，完全写入后再 rename 持久化到磁盘中，可以保证读取到完整的数据。
+ 
+3、worker 容错机制
+当 worker 出错，任务无法及时完成时，需将任务重分配给另一个 worker 重新执行。
+map task：重置所有 completed 和 in-progerss任务为 idel，并重执行。
+recude task：completed任务不要重执行；重置in-progerss任务位idel，并重执行。
+
+4、如何判断 worker 出错？
+wokrer 出错分三种情况：
+worker 崩溃，如进程崩溃、系统崩溃、硬件故障等；
+worker 存活但已停滞，如网络分区、程序死锁等；
+worker 执行缓慢，如网络延迟、CPU/内存资源不足等；
+
+由于无法可靠区分三种情况，一般情况是使用超时机制，在 master 等待一定时间后，则判断 worker 出错，重新分配任务给不同的 worker。
+本实验的超时时间设置为10s。
+
+4、master收到任务完成消息时
+a. 重复收到同一 task 完成消息时，直接忽略消息
+b. 当task已重分配，旧 worker 发送完成消息时，直接忽略消息
+
+5、在最后一个 map task 完成后才能开始分配 reduce task，如何衔接这两个阶段
+记录还未完成的map任务的数目n，当worker完成任务并发送提交消息时，才进行减一操作；
+当最后map任务还未完成时，请求消息返回睡眠任务，worker进行sleep一段时间再进行请求；
+直到n等于0，才过渡到reduce阶段；
+
+6、mapreduce 任务全部完成时，master 和worker 分别如何退出
+让 Done() 返回true，master 线程先退出；
+master退出后，worker 调用 call() 将返回 false，worker 线程退出。
+
+7、sort 命令出现错误
+在测试shell脚本中，会使用 sort 命令对所有reduce输出文件的内容进行统一排序，然后与单机执行的输出文件进行比较。
+由于最终排序结果是区分大小写的，如果 sort 命令不区分大小写，那么测试结果将会被判断为错误。
+当 local 字符集设置不准确时，sort 就会出现不区分大小写的情况，需要设置环境变量 LOC_ALL=C。
+
+~~ 应用场景：大规模机器学习问题，分布式训练等。
