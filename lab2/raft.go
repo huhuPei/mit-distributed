@@ -543,6 +543,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
   atomic.StoreInt32(&rf.dead, 1)
   // Your code here, if desired.
+  rf.appCond.Broadcast()
 }
 
 func (rf *Raft) killed() bool {
