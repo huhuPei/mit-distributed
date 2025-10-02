@@ -9,6 +9,8 @@ Lab2: Raft
 实现基于共识算法的日志复制机制   
 
 Lab3: KV Raft    
+实现具备容错的 KV 存储服务
+
 Lab4: Sharded KV  
 
 #### 论文解读：
