@@ -1,0 +1,113 @@
+Raft 实现记录
+
+一、lab2A 领导者选举（leader election）
+
+规则：多数投票原则 + 随机选举时间
+
+1、如何定义选举超时？
+给定一个范围，随机一个选举超时，用一个时间变量记录初始时间，然后定期检查当前时间与记录时间的间隔是否大于选举超时。
+
+论文中随机超时为150ms~300ms，随机超时应该比广播时间大一个数量级别。广播时间是leader发送rpc到收到响应的时间，包括心跳时间与网络传输时间。
+由于实验限制心跳是一秒10次，也就是心跳时间是100ms，理论上应该选择1s以上的选举超时，但是又不能太大，因为需要在5s内选出领导者，否则测试会失败。
+为了满足测试要求，选举超时可选择1s左右的范围。在代码实现中，选择500-1000ms，可以稳定通过测试。虽然没有严格达到一个数量级，但已显著大于心跳时间，系统能够正常工作。
+
+显然，实际的超时范围，在心跳间隔显著小于选举超时条件下，可根据实际场景进行调整。
+
+2、重置选举时间的时机
+a. 在开始选举时（超时时间内没有收到心跳）
+b. 从当前 leader 处收到心跳消息（也就是过期的leader消息不能重置）
+c. 成功投票给另外一个peer（需要判断候选者者资格）
+
+3、节点在每次选举中如何防止重复投票？
+场景：出现多个候选人同时发起选举，在无法选出 leader 后会再次超时发起选举，此时节点如何防止重复投票？
+节点根据 requestRPC 参数 term 与 自身 currentTerm 进行比较，如果 term > currentTermterm，说明已经开始新任期的选举，可以重置 voteFor，并再次投票。
+
+4、延伸一下，节点在什么时候可以进行投票？
+在节点通过RPC进行相互通信时，对于接收端，只要请求参数 term > currentTerm，就可以重置 voteFor，表示可以进行投票。
+同理，对于发送端，检查回复请求参数 term。
+
+5、如何选择合格的候选人，保持日志最新？
+a. 任期判断
+首先候选者 term 要比投票者 term 大。
+b. up-to-date原则
+定义：如果日志的最后一个条目具有不同的term，则具有较大 term 的日志更新；如果日志以相同的 term 结尾，则具有较长的日志更新。
+候选者日志至少要跟投票者一样新。
+
+6、容易遇到的问题：
+死锁（持有锁进行RPC）
+在进行RPC操作时，由于RPC是阻塞操作，如果两个节点在持有锁的情况下同时向对端发送RPC，那么会造成死锁等待。
+方案：在发送RPC前必须先将锁释放。
+
+线程可能无法正常退出（cond 等待，一直没有被唤醒导致没有退出）
+方案：在每个线程中，loop循环 killed() 检查线程是否退出；
+Kill() 是退出函数，调用 Kill()，killed() 会返回true，下一次 loop 时，线程都会陆续退出，所以可以在 Kill 中通知条件变量唤醒线程，保证线程顺利退出
+
+二、lab2B 日志复制（log replicate）
+
+1、heartbeat如何处理？
+它是追加条目为空的appendRPC，处理方式与普通appendRPC一致，不需要特殊对待。
+
+2、日志追加时，如何确定复制起点？
+通过一致性检查。
+leader 发送日志时，要带上 PrevLogIndex 和 PrevLogTerm，表示日志起点前一个 entry 的 index 和 term 信息；
+follower 要从 log 上读取 PrevLogIndex 处的 entry，判断 entry.term == PrevLogTerm，相等就将接收到的所有日志 entry 复制到本地，否则就回复添加失败；
+leader 接收到失败的回复后，回退一个位置，得到新的复制起点。
+
+3、Log Entry 状态：uncommitted committed applied
+只有已提交的 log entry 才能应用到上层应用。
+Make sure that you check for commitIndex > lastApplied either periodically, or after commitIndex is updated
+
+4、如何判断一条log entry已经提交了呢？
+需要遵循两个原则：
+a. 需要复制到大多数peers；（通过 matchIndex 计算）
+b. log entry 所属 term 必须等于 currentTerm，属于先前 term 的 entry 需要在 currentTerm 提交完第一个 entry 后，才算提交，也就是需要判断log[N].term == currentTerm；
+
+论文 Figure 8 中已经对其原因进行了解释，在 currentTerm 提交任何 entry 之前，是无法确定先前 term 的 entry 已经提交的，在领导者切换时这些已提交的 entry 可能会丢失。
+
+5、commitIndex 如何推进？
+leader：通过更新的 matchIndex，判断每条 log entry 时候已经复制到大多数节点；
+follower：通过 leader 传递的 commitIndex 参数进行更新。
+
+6、需不需要维护自身的 matchIndex？
+需要的。同时需要在成为 leader 后，在初始化时，必须将自身的 matchIndex 设为 len(log)-1，表示已知的log长度。
+如果不这样做，当只剩下半数 servers 时，可能会出现一直无法提交指令的情况，因为半数减去自身永远无法达到数量要求。
+
+7、日志快速追赶
+原始的日志复制每次失败都是回退一个位置然后重发，如果不一致的条目太多，会造成较大的网络开销（论文中表明系统故障是很少发生的，所以这种优化可能是没必要的）。
+
+方案：增加回复参数 XTerm 和 XIndex ，XTerm 表示对端节点冲突 entry 的term，XIndex 表示日志中 XTerm 首次出现的位置。
+由于节点日志中 term = XTerm 的entry与leader发生冲突，那么该 term 的所有entry大概率与 leader 也是冲突的。
+
+三、lab2C 持久化
+这部分没有难的地方，只要在持久状态数据更改时进行持久化即可。
+
+四、lab2D 日志压缩
+需要定义一个 log 对象，用于管理log entries和起始index，起始index用于记录快照后保留日志中首个 entry 的逻辑位置。
+
+初始时，日志有个空entry，作为首个entry，其 index 为0，term 也为0，它没有实际含义，主要是容易处理日志边界。那么在快照后，为了保持处理逻辑一致，
+应该也保留一个空 entry，其 term 为被截断的日志中最后一个条目的 term，这个空 entry 作为保留日志中的首个entry。
+
+例：
+index:  0 1 2 3 4 5 6 
+       ---------------
+enrty: |0|1|1|1|2|2|2|
+       ---------------
+
+如果在index 3处进行截断，那么起始index设置为3。该位置为空entry，其term为1，没有实际意义，只起边界作用。
+index:  3 4 5 6 
+       ---------
+enrty: |1|2|2|2|
+       ---------
+
+这里有个细节，如果快照时leader与follower在index 3处出现冲突，也就是term不相等，那么从index 3开始的日志都是不一致的，都可以被leader log覆盖。
+当出现这种情况时，follower 可以将之前的log全部丢弃，重新创建log对象，起始index为3，然后写入第一个entry，其term为1。
+
+index:  3  
+       ---
+enrty: |1|
+       ---
+
+问题点：
+Raft 与 Paxos的区别？
+
+为什么有了 Raft 还需要 Paxos？Paxos 相对于 Raft 的优势在哪里？
